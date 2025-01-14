@@ -40,7 +40,8 @@ import (
 )
 
 const (
-	GigaByte = 1024 * 1048576
+	GigaByte                = 1024 * 1048576
+	ExtendedResourceKeyXCPU = "x-cpu"
 )
 
 func TestGroupQuotaManager_QuotaAdd(t *testing.T) {
@@ -151,6 +152,7 @@ func TestGroupQuotaManager_UpdateQuota(t *testing.T) {
 }
 
 func TestGroupQuotaManager_UpdateQuotaInternalAndRequest(t *testing.T) {
+	// add resource to node
 	gqm := NewGroupQuotaManagerForTest()
 	deltaRes := createResourceList(96, 160*GigaByte)
 	gqm.UpdateClusterTotalResource(deltaRes)
@@ -160,23 +162,61 @@ func TestGroupQuotaManager_UpdateQuotaInternalAndRequest(t *testing.T) {
 
 	AddQuotaToManager(t, gqm, "test1", extension.RootQuotaName, 96, 160*GigaByte, 50, 80*GigaByte, true, false)
 
-	// test1 request[120, 290]  runtime == maxQuota
+	// request[120, 290] > maxQuota, runtime == maxQuota
 	request := createResourceList(120, 290*GigaByte)
 	gqm.updateGroupDeltaRequestNoLock("test1", request, request, 0)
 	runtime := gqm.RefreshRuntime("test1")
-	assert.Equal(t, deltaRes, runtime)
+	expectCurrentRuntime := deltaRes
+	assert.Equal(t, expectCurrentRuntime, runtime)
 
+	// update resourceKey
 	quota1 := CreateQuota("test1", extension.RootQuotaName, 64, 100*GigaByte, 60, 90*GigaByte, true, false)
 	quota1.Labels[extension.LabelQuotaIsParent] = "false"
 	err := gqm.UpdateQuota(quota1, false)
 	assert.Nil(t, err)
 	quotaInfo := gqm.GetQuotaInfoByName("test1")
 	assert.Equal(t, createResourceList(64, 100*GigaByte), quotaInfo.CalculateInfo.Max)
-
 	runtime = gqm.RefreshRuntime("test1")
-	assert.Equal(t, createResourceList(64, 100*GigaByte), runtime)
-}
+	expectCurrentRuntime = createResourceList(64, 100*GigaByte)
+	assert.Equal(t, expectCurrentRuntime, runtime)
 
+	// added max ExtendedResourceKeyXCPU without node resource added
+	// runtime.ExtendedResourceKeyXCPU = 0
+	request[ExtendedResourceKeyXCPU] = *resource.NewQuantity(80, resource.DecimalSI)
+	gqm.updateGroupDeltaRequestNoLock("test1", request, request, 0)
+	xCPUQuantity := resource.NewQuantity(100, resource.DecimalSI)
+	quota1.Spec.Max[ExtendedResourceKeyXCPU] = *xCPUQuantity
+	maxJson, err := json.Marshal(quota1.Spec.Max)
+	assert.Nil(t, err)
+	quota1.Annotations[extension.AnnotationSharedWeight] = string(maxJson)
+	gqm.UpdateQuota(quota1, false)
+	quotaInfo = gqm.quotaInfoMap["test1"]
+	assert.True(t, quotaInfo != nil)
+	assert.Equal(t, *xCPUQuantity, quotaInfo.CalculateInfo.Max[ExtendedResourceKeyXCPU])
+	runtime = gqm.RefreshRuntime("test1")
+	expectCurrentRuntime[ExtendedResourceKeyXCPU] = resource.Quantity{Format: resource.DecimalSI}
+	assert.Equal(t, expectCurrentRuntime, runtime)
+
+	// add ExtendedResourceKeyXCPU to node resource
+	deltaRes[ExtendedResourceKeyXCPU] = *xCPUQuantity
+	gqm.UpdateClusterTotalResource(deltaRes)
+	runtime = gqm.RefreshRuntime("test1")
+	expectCurrentRuntime[ExtendedResourceKeyXCPU] = *resource.NewQuantity(80, resource.DecimalSI)
+	assert.Equal(t, expectCurrentRuntime, runtime)
+
+	// delete max ExtendedResourceKeyXCPU
+	delete(quota1.Spec.Max, ExtendedResourceKeyXCPU)
+	maxJson, err = json.Marshal(quota1.Spec.Max)
+	assert.Nil(t, err)
+	quota1.Annotations[extension.AnnotationSharedWeight] = string(maxJson)
+	gqm.UpdateQuota(quota1, false)
+	quotaInfo = gqm.quotaInfoMap["test1"]
+	assert.True(t, quotaInfo != nil)
+	assert.Equal(t, resource.Quantity{}, quotaInfo.CalculateInfo.Max[ExtendedResourceKeyXCPU])
+	runtime = gqm.RefreshRuntime("test1")
+	delete(expectCurrentRuntime, ExtendedResourceKeyXCPU)
+	assert.Equal(t, expectCurrentRuntime, runtime)
+}
 func TestGroupQuotaManager_DeleteOneGroup(t *testing.T) {
 	gqm := NewGroupQuotaManagerForTest()
 	gqm.UpdateClusterTotalResource(createResourceList(1000, 1000*GigaByte))

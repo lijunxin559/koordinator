@@ -563,23 +563,32 @@ func (gqm *GroupQuotaManager) updateOneGroupSharedWeightNoLock(quotaInfo *QuotaI
 	gqm.runtimeQuotaCalculatorMap[quotaInfo.ParentName].updateOneGroupSharedWeight(quotaInfo)
 }
 
+// updateResourceKeyNoLock based on quotaInfo.CalculateInfo.Max of self
+// Note: RootQuotaName need to be updated as allResourceKeys
 func (gqm *GroupQuotaManager) updateResourceKeyNoLock() {
 	// collect all dimensions
-	resourceKeys := make(map[v1.ResourceName]struct{})
+	allResourceKeys := make(map[v1.ResourceName]struct{})
 	for quotaName, quotaInfo := range gqm.quotaInfoMap {
-		if quotaName == extension.DefaultQuotaName || quotaName == extension.SystemQuotaName {
+		if quotaName == extension.RootQuotaName || quotaName == extension.DefaultQuotaName || quotaName == extension.SystemQuotaName {
 			continue
 		}
+		resourceKeys := make(map[v1.ResourceName]struct{})
 		for resName := range quotaInfo.CalculateInfo.Max {
+			allResourceKeys[resName] = struct{}{}
 			resourceKeys[resName] = struct{}{}
+		}
+		// update right now
+		if runtimeQuotaCalculator, ok := gqm.runtimeQuotaCalculatorMap[quotaName]; ok && runtimeQuotaCalculator != nil && !reflect.DeepEqual(resourceKeys, runtimeQuotaCalculator.resourceKeys) {
+			runtimeQuotaCalculator.updateResourceKeys(resourceKeys)
 		}
 	}
 
-	if !reflect.DeepEqual(resourceKeys, gqm.resourceKeys) {
-		gqm.resourceKeys = resourceKeys
-		for _, runtimeQuotaCalculator := range gqm.runtimeQuotaCalculatorMap {
-			runtimeQuotaCalculator.updateResourceKeys(resourceKeys)
-		}
+	if !reflect.DeepEqual(allResourceKeys, gqm.resourceKeys) {
+		gqm.resourceKeys = allResourceKeys
+	}
+	// in case RootQuota-resourceKey is nil
+	if runtimeQuotaCalculator, ok := gqm.runtimeQuotaCalculatorMap[extension.RootQuotaName]; ok && runtimeQuotaCalculator != nil && !reflect.DeepEqual(allResourceKeys, runtimeQuotaCalculator.resourceKeys) {
+		runtimeQuotaCalculator.updateResourceKeys(allResourceKeys)
 	}
 }
 
@@ -1019,7 +1028,6 @@ func (gqm *GroupQuotaManager) updateQuotaInternalNoLock(newQuotaInfo, oldQuotaIn
 
 	// update resource keys
 	gqm.updateResourceKeyNoLock()
-
 	oldMin := v1.ResourceList{}
 	if oldQuotaInfo != nil {
 		oldMin = oldQuotaInfo.CalculateInfo.Min
